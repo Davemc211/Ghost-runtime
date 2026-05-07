@@ -40,4 +40,9 @@ extern "C" void QCALLTYPE NativeRuntimeEventSource_LogWaitHandleWaitStop(uint16_
 
 #endif // defined(FEATURE_PERFTRACING)
 
+// Tier 1: Ghost.Runtime.Punch managed entrypoint. Always available — does not
+// require FEATURE_PERFTRACING because it does not consume the runtime
+// EventSource at all; it writes directly to the Ghost sink via ghost_emit.cpp.
+extern "C" void QCALLTYPE NativeRuntimeEventSource_LogGhostUserPunch(uint8_t opCode, uint8_t magnitude, uint16_t detail);
+
 #endif //_NATIVEEVENTSOURCE_H_

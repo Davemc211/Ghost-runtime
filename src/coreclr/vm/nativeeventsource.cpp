@@ -10,6 +10,7 @@
 
 #include "common.h"
 #include "nativeeventsource.h"
+#include "ghost/ghost_emit.h"
 
 #if defined(FEATURE_EVENTSOURCE_XPLAT)
 
@@ -117,6 +118,8 @@ extern "C" void QCALLTYPE NativeRuntimeEventSource_LogThreadPoolWorkerThreadAdju
 
     FireEtwThreadPoolWorkerThreadAdjustmentAdjustment(averageThroughput, newWorkerThreadCount, reason, clrInstanceID);
 
+    GhostTier0::EmitThreadAdjust((uint32_t)newWorkerThreadCount, (uint32_t)reason);
+
     END_QCALL;
 }
 
@@ -202,6 +205,11 @@ extern "C" void QCALLTYPE NativeRuntimeEventSource_LogContentionStop(uint8_t Con
 
     FireEtwContentionStop_V1(ContentionFlags, ClrInstanceID, DurationNs);
 
+    // Tier 0: ContentionStop does not carry a lock identity; use the calling
+    // thread id so back-to-back contentions on the same thread cluster, while
+    // still letting the duration float to the analyzer.
+    GhostTier0::EmitContention((uint64_t)GetCurrentThreadId(), DurationNs);
+
     END_QCALL;
 }
 
@@ -227,3 +235,18 @@ extern "C" void QCALLTYPE NativeRuntimeEventSource_LogWaitHandleWaitStop(uint16_
 
 
 #endif // FEATURE_PERFTRACING
+
+// Tier 1: Ghost.Runtime.Punch managed entrypoint. Lives outside the
+// FEATURE_PERFTRACING gate because it does not consume the runtime
+// EventSource — it writes directly to the Ghost sink. Designed to be the
+// honest pre-intrinsic baseline measured by samples/Tier0Bench; the JIT
+// intrinsic in a later Tier 1 slice will replace this QCall transition.
+extern "C" void QCALLTYPE NativeRuntimeEventSource_LogGhostUserPunch(uint8_t opCode, uint8_t magnitude, uint16_t detail)
+{
+    QCALL_CONTRACT;
+    BEGIN_QCALL;
+
+    GhostTier0::EmitUserPunch(opCode, magnitude, detail);
+
+    END_QCALL;
+}

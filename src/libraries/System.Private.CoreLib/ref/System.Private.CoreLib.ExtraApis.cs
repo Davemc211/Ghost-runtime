@@ -4,6 +4,14 @@
 // NOTE: Types/members which are not publicly exposed in System.Runtime.dll but still used internally by libraries.
 //       Manually maintained, keep in sync with System.Private.CoreLib.ExtraApis.txt
 
+namespace Ghost
+{
+    public static partial class Runtime
+    {
+        [System.CLSCompliant(false)]
+        public static void Punch(byte opCode, byte magnitude, ushort detail) { }
+    }
+}
 namespace System.Runtime.Serialization
 {
     public readonly partial struct DeserializationToken : System.IDisposable

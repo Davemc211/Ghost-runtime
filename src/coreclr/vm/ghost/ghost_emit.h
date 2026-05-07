@@ -61,6 +61,59 @@ namespace GhostTier0
                         uint32_t    nativeCodeSize,
                         uint32_t    elapsedMs);
 
+    // GC pause pair (gcenv.ee.cpp call sites). EmitGcSuspend assigns a fresh
+    // CorrelationId and records the start tick on a process-wide slot;
+    // EmitGcResume reads that slot to compute DurationMs and emit with the
+    // same CorrelationId, so suspend/resume records can be joined by id.
+    //   SourceHash    = FNV-1a("CoreCLR")
+    //   TargetHash    = FNV-1a("GCHeap::SuspendEE" | "GCHeap::RestartEE")
+    //   Detail        = SUSPEND_REASON (suspend only)
+    void EmitGcSuspend(uint32_t reason);
+    void EmitGcResume();
+
+    // GC collection completion (DiagGCEnd call site). Per the Tier 0 wire
+    // contract:
+    //   SourceHash = FNV-1a("CoreCLR")
+    //   TargetHash = FNV-1a("GCHeap::GarbageCollectGeneration")
+    //   Magnitude  = generation
+    //   Detail     = (generation & 0xF) | ((reason & 0xF) << 4)
+    void EmitGcCollection(uint32_t generation, uint32_t reason);
+
+    // Lock contention stop (nativeeventsource.cpp call site). Per the Tier 0
+    // wire contract:
+    //   SourceHash    = FNV-1a("Monitor")
+    //   TargetHash    = FNV-1a(hex(lockId))   (lock identity, opaque at Tier 0)
+    //   CorrelationId = lockId
+    //   DurationMs    = saturating(durationNs / 1e6)
+    void EmitContention(uint64_t lockId, double durationNs);
+
+    // ThreadPool worker count adjustment (nativeeventsource.cpp call site).
+    //   SourceHash = FNV-1a("CoreCLR")
+    //   TargetHash = FNV-1a("ThreadpoolMgr::AdjustMaxWorkersActive")
+    //   Detail     = new worker count (saturating uint16)
+    //   Magnitude  = adjustment reason (low byte)
+    void EmitThreadAdjust(uint32_t newWorkerCount, uint32_t reason);
+
+    // ---- Tier 1: managed user-punch entrypoint ------------------------------
+    //
+    // Backs the System.Private.CoreLib `Ghost.Runtime.Punch(opCode, magnitude,
+    // detail)` API via a QCall in nativeeventsource.cpp. The caller chooses
+    // the opCode (typically Custom1/Custom2 from GhostOpCodes, but any byte is
+    // wire-legal); the runtime stamps tick / process id / thread id and the
+    // OriginRuntime=Server marker the same way every other Tier 0 emitter
+    // does. CorrelationId is 0 at Tier 1 — correlation propagation lights up
+    // with ExecutionContext flow in a later slice.
+    //
+    //   SourceHash = FNV-1a("UserCode")
+    //   TargetHash = 0    (reserved for a future overload taking a name hash)
+    //   Magnitude  = caller-supplied
+    //   Detail     = caller-supplied
+    //
+    // Must be cheap: this is the substrate the Tier 1 JIT intrinsic will
+    // replace with an inline ring write, so the QCall version is the honest
+    // pre-intrinsic baseline measured by samples/Tier0Bench.
+    void EmitUserPunch(uint8_t opCode, uint8_t magnitude, uint16_t detail);
+
     // Test/diagnostics: flush + close the sink. Safe to call multiple times.
     void Shutdown();
 }

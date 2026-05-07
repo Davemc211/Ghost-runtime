@@ -42,6 +42,12 @@ namespace
     uint64_t s_bootBaselineTicks = 0;
     uint16_t s_corrSequence = 0;
 
+    // Tracks the in-flight GC suspend pair so EmitGcResume can compute the
+    // pause duration and re-use the same correlation id. Mutated only under
+    // s_sinkLock.
+    uint64_t s_gcSuspendCorr = 0;
+    uint64_t s_gcSuspendStartMs = 0;
+
     // Tier 0 emitters can fire from multiple threads (e.g. AssemblyLoad on
     // worker threads after EE startup). Serialize sink writes and the
     // s_corrSequence counter with a CRST. Created lazily under InitOnce.
@@ -225,6 +231,124 @@ namespace GhostTier0
                                                       : (uint16_t)nativeCodeSize;
         card.duration_ms    = elapsedMs > 0xFFFFu ? (uint16_t)0xFFFFu
                                                   : (uint16_t)elapsedMs;
+        WriteCard(card);
+    }
+
+    void EmitGcSuspend(uint32_t reason)
+    {
+        EnsureSinkLock();
+        CrstHolder lock(&s_sinkLock);
+
+        // Each suspend gets a fresh correlation id derived from the current
+        // tick. The matching resume reads s_gcSuspendCorr/s_gcSuspendStartMs
+        // under the same lock, so there is no race even if a concurrent GC
+        // were ever to interleave.
+        uint64_t startMs = GetTickCount64();
+        uint64_t corr    = (startMs << 8) ^ (uint64_t)GHOST_OP_CLR_GC_SUSPEND;
+        s_gcSuspendCorr     = corr;
+        s_gcSuspendStartMs  = startMs;
+
+        ghost_punch_card card;
+        FillCommon(card, GHOST_OP_CLR_GC_SUSPEND, "GCHeap::SuspendEE");
+        card.correlation_id = corr;
+        card.detail         = reason > 0xFFFFu ? (uint16_t)0xFFFFu
+                                               : (uint16_t)reason;
+        WriteCard(card);
+    }
+
+    void EmitGcResume()
+    {
+        EnsureSinkLock();
+        CrstHolder lock(&s_sinkLock);
+
+        uint64_t corr    = s_gcSuspendCorr;
+        uint64_t deltaMs = (corr != 0)
+            ? (GetTickCount64() - s_gcSuspendStartMs)
+            : 0;
+        s_gcSuspendCorr    = 0;
+        s_gcSuspendStartMs = 0;
+
+        ghost_punch_card card;
+        FillCommon(card, GHOST_OP_CLR_GC_RESUME, "GCHeap::RestartEE");
+        card.correlation_id = corr;
+        card.duration_ms    = deltaMs > 0xFFFFu ? (uint16_t)0xFFFFu
+                                                : (uint16_t)deltaMs;
+        WriteCard(card);
+    }
+
+    void EmitGcCollection(uint32_t generation, uint32_t reason)
+    {
+        EnsureSinkLock();
+        CrstHolder lock(&s_sinkLock);
+
+        ghost_punch_card card;
+        FillCommon(card, GHOST_OP_CLR_GC_COLLECTION, "GCHeap::GarbageCollectGeneration");
+        // CorrelationId joins this completion with the in-flight suspend pair
+        // (if any). At Tier 0 we only have whatever the suspend slot still
+        // holds; that is fine because DiagGCEnd fires before RestartEE clears
+        // it for blocking GCs.
+        card.correlation_id = s_gcSuspendCorr;
+        card.magnitude      = (uint8_t)(generation & 0xFFu);
+        card.detail         = (uint16_t)((generation & 0xFu) | ((reason & 0xFu) << 4));
+        WriteCard(card);
+    }
+
+    void EmitContention(uint64_t lockId, double durationNs)
+    {
+        EnsureSinkLock();
+        CrstHolder lock(&s_sinkLock);
+
+        // Render the lock id as a stable uppercase hex string so TargetHash
+        // collides for the same lock across reports without leaking pointers
+        // upstream.
+        char idBuf[32];
+        sprintf_s(idBuf, ARRAY_SIZE(idBuf), "0x%016llX", (unsigned long long)lockId);
+
+        ghost_punch_card card;
+        FillCommon(card, GHOST_OP_CLR_CONTENTION, idBuf);
+        card.source_hash    = GhostFnv1aUpper("Monitor");
+        card.correlation_id = lockId;
+        double ms = durationNs / 1.0e6;
+        if (ms < 0) ms = 0;
+        if (ms > 65535.0) ms = 65535.0;
+        card.duration_ms    = (uint16_t)ms;
+        WriteCard(card);
+    }
+
+    void EmitThreadAdjust(uint32_t newWorkerCount, uint32_t reason)
+    {
+        EnsureSinkLock();
+        CrstHolder lock(&s_sinkLock);
+
+        ghost_punch_card card;
+        FillCommon(card, GHOST_OP_CLR_THREAD_ADJUST, "ThreadpoolMgr::AdjustMaxWorkersActive");
+        card.correlation_id = 0;
+        card.magnitude      = (uint8_t)(reason & 0xFFu);
+        card.detail         = newWorkerCount > 0xFFFFu ? (uint16_t)0xFFFFu
+                                                       : (uint16_t)newWorkerCount;
+        WriteCard(card);
+    }
+
+    void EmitUserPunch(uint8_t opCode, uint8_t magnitude, uint16_t detail)
+    {
+        // Tier 1 wire contract for the managed Ghost.Runtime.Punch API:
+        //   op_code        = caller-supplied
+        //   magnitude      = caller-supplied
+        //   detail         = caller-supplied
+        //   source_hash    = FNV-1a("UserCode")
+        //   target_hash    = 0        (reserved for a future named overload)
+        //   correlation_id = 0        (ExecutionContext flow lands later)
+        //   tick / pid / tid / OriginRuntime stamped by FillCommon
+        EnsureSinkLock();
+        CrstHolder lock(&s_sinkLock);
+
+        ghost_punch_card card;
+        FillCommon(card, opCode, /*targetName*/ "");
+        card.source_hash    = GhostFnv1aUpper("UserCode");
+        card.target_hash    = 0;
+        card.correlation_id = 0;
+        card.magnitude      = magnitude;
+        card.detail         = detail;
         WriteCard(card);
     }
 

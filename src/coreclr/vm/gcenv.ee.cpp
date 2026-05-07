@@ -24,6 +24,7 @@
 #include "configuration.h"
 #include "genanalysis.h"
 #include "eventpipeadapter.h"
+#include "ghost/ghost_emit.h"
 #include <minipal/memorybarrierprocesswide.h>
 
 // Finalizes a weak reference directly.
@@ -51,6 +52,8 @@ void GCToEEInterface::SuspendEE(SUSPEND_REASON reason)
 
     if (g_pDebugInterface)
         g_pDebugInterface->SuspendForGarbageCollectionCompleted();
+
+    GhostTier0::EmitGcSuspend((uint32_t)reason);
 }
 
 void GCToEEInterface::RestartEE(bool bFinishedGC)
@@ -61,6 +64,8 @@ void GCToEEInterface::RestartEE(bool bFinishedGC)
         g_pDebugInterface->ResumeForGarbageCollectionStarted();
 
     ThreadSuspend::RestartEE(bFinishedGC, TRUE);
+
+    GhostTier0::EmitGcResume();
 }
 
 VOID GCToEEInterface::SyncBlockCacheWeakPtrScan(HANDLESCANPROC scanProc, uintptr_t lp1, uintptr_t lp2)
@@ -878,6 +883,7 @@ void GCToEEInterface::DiagUpdateGenerationBounds()
 
 void GCToEEInterface::DiagGCEnd(size_t index, int gen, int reason, bool fConcurrent)
 {
+    GhostTier0::EmitGcCollection((uint32_t)gen, (uint32_t)reason);
 #ifdef GC_PROFILING
     // We were only doing generation bounds and GC finish callback for non concurrent GCs so
     // I am keeping that behavior to not break profilers. But if BasicGC monitoring is enabled
