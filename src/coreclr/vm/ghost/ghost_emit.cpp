@@ -42,6 +42,25 @@ namespace
     uint64_t s_bootBaselineTicks = 0;
     uint16_t s_corrSequence = 0;
 
+    // ---- Tier 1 ring sink ---------------------------------------------------
+    // Hot-path producers (under s_sinkLock) only memcpy a 64-byte card into a
+    // pre-allocated ring slot and bump a write cursor. A single background
+    // drainer thread batches these into fwrite/fflush calls so the per-call
+    // cost no longer pays a synchronous WriteFile. See
+    // docs/insights/found/tier1-punch-cost-baseline.md for the regression
+    // anchor that motivated this rewrite.
+    constexpr size_t  kRingCap   = 1u << 16; // 65536 cards = 4 MiB
+    constexpr size_t  kRingMask  = kRingCap - 1;
+    constexpr size_t  kWakeBatch = 64;       // wake drainer every N cards
+
+    ghost_punch_card* s_ring        = nullptr;
+    volatile LONG64   s_ringWrite   = 0;     // next slot index (producers, under lock)
+    volatile LONG64   s_ringRead    = 0;     // next slot to drain (drainer only)
+    volatile LONG64   s_overflow    = 0;     // cards written synchronously due to full ring
+    HANDLE            s_drainEvent  = nullptr;
+    HANDLE            s_drainThread = nullptr;
+    volatile LONG     s_drainStop   = 0;
+
     // Tracks the in-flight GC suspend pair so EmitGcResume can compute the
     // pause duration and re-use the same correlation id. Mutated only under
     // s_sinkLock.
@@ -107,6 +126,111 @@ namespace
         // pull in mkdir helpers from the PAL just for this — if the directory
         // doesn't exist, fopen returns NULL and we silently disable.
         s_sink = fopen(path, "wb");
+    }
+
+    // Forward declaration: PublishCard's overflow path falls back to WriteCard.
+    void WriteCard(const ghost_punch_card& card);
+
+    // ---- Tier 1 ring sink: drainer ------------------------------------------
+    void DrainRingLocked()
+    {
+        // Caller holds s_sinkLock. Drains all currently-published cards.
+        OpenSinkOnce();
+        if (s_sink == nullptr)
+            return;
+
+        LONG64 write = s_ringWrite;
+        LONG64 read  = s_ringRead;
+        if (read == write)
+            return;
+
+        // Drain in up to two contiguous spans (handles wrap-around).
+        size_t available = (size_t)(write - read);
+        if (available > kRingCap) // producer overran us; clamp to capacity
+            available = kRingCap;
+
+        size_t startIdx = (size_t)(read & kRingMask);
+        size_t firstRun = kRingCap - startIdx;
+        if (firstRun > available) firstRun = available;
+
+        fwrite(&s_ring[startIdx], sizeof(ghost_punch_card), firstRun, s_sink);
+        size_t remaining = available - firstRun;
+        if (remaining > 0)
+            fwrite(&s_ring[0], sizeof(ghost_punch_card), remaining, s_sink);
+
+        fflush(s_sink);
+        s_ringRead = read + (LONG64)available;
+    }
+
+    DWORD WINAPI DrainThreadProc(LPVOID)
+    {
+        // Background drainer. Batches producer writes into one fwrite/fflush
+        // pair per wake. WaitForSingleObject is fine here; this thread does no
+        // managed work and never enters the GC.
+        while (true)
+        {
+            WaitForSingleObject(s_drainEvent, 5 /*ms*/);
+            {
+                CrstHolder lock(&s_sinkLock);
+                DrainRingLocked();
+                if (s_drainStop != 0 && s_ringRead == s_ringWrite)
+                    return 0;
+            }
+        }
+    }
+
+    void EnsureRingStarted()
+    {
+        // Caller holds s_sinkLock. First-publish initialization of the ring
+        // and drainer thread; idempotent.
+        if (s_ring != nullptr)
+            return;
+        s_ring = (ghost_punch_card*)calloc(kRingCap, sizeof(ghost_punch_card));
+        if (s_ring == nullptr)
+            return;
+        s_drainEvent  = CreateEventW(nullptr, /*manualReset*/ FALSE, /*initial*/ FALSE, nullptr);
+        if (s_drainEvent == nullptr)
+        {
+            free(s_ring);
+            s_ring = nullptr;
+            return;
+        }
+        s_drainThread = CreateThread(nullptr, 0, DrainThreadProc, nullptr, 0, nullptr);
+        if (s_drainThread == nullptr)
+        {
+            CloseHandle(s_drainEvent);
+            s_drainEvent = nullptr;
+            free(s_ring);
+            s_ring = nullptr;
+            return;
+        }
+    }
+
+    void PublishCard(const ghost_punch_card& card)
+    {
+        // Caller holds s_sinkLock. Either enqueues into the ring (fast path)
+        // or, if the ring is unavailable / full, falls back to a synchronous
+        // fwrite so we never silently drop cards.
+        EnsureRingStarted();
+
+        if (s_ring != nullptr)
+        {
+            LONG64 write = s_ringWrite;
+            LONG64 read  = s_ringRead;
+            if ((write - read) < (LONG64)kRingCap)
+            {
+                size_t slot = (size_t)(write & kRingMask);
+                memcpy(&s_ring[slot], &card, sizeof(card));
+                s_ringWrite = write + 1;
+                if (((write + 1) & (kWakeBatch - 1)) == 0)
+                    SetEvent(s_drainEvent);
+                return;
+            }
+            // Ring full — fall through to sync write to preserve the record.
+            InterlockedIncrement64(&s_overflow);
+        }
+
+        WriteCard(card);
     }
 
     void WriteCard(const ghost_punch_card& card)
@@ -335,34 +459,68 @@ namespace GhostTier0
         //   op_code        = caller-supplied
         //   magnitude      = caller-supplied
         //   detail         = caller-supplied
-        //   source_hash    = FNV-1a("UserCode")
+        //   source_hash    = FNV-1a("UserCode")   (precomputed)
         //   target_hash    = 0        (reserved for a future named overload)
         //   correlation_id = 0        (ExecutionContext flow lands later)
-        //   tick / pid / tid / OriginRuntime stamped by FillCommon
+        //   tick / pid / tid / OriginRuntime stamped inline (no FNV per call)
         EnsureSinkLock();
         CrstHolder lock(&s_sinkLock);
 
+        // Hot-path constants are precomputed once per process so this
+        // function does not pay any FNV hashing cost.
+        static const uint32_t kUserCodeHash = GhostFnv1aUpper("UserCode");
+        static const uint16_t kPid          = (uint16_t)GetCurrentProcessId();
+
         ghost_punch_card card;
-        FillCommon(card, opCode, /*targetName*/ "");
-        card.source_hash    = GhostFnv1aUpper("UserCode");
+        memset(&card, 0, sizeof(card));
+        card.tick           = TickSinceBoot();
+        card.op_code        = opCode;
+        card.source_hash    = kUserCodeHash;
         card.target_hash    = 0;
         card.correlation_id = 0;
+        card.corr_sequence  = s_corrSequence++;
+        card.process_id     = kPid;
+        card.thread_id      = (uint16_t)GetCurrentThreadId();
         card.magnitude      = magnitude;
         card.detail         = detail;
-        WriteCard(card);
+        card.extra_detail   = GHOST_ORIGIN_BITS(GHOST_ORIGIN_SERVER);
+        PublishCard(card);
     }
 
     void Shutdown()
     {
-        if (s_sinkLockInit)
+        if (!s_sinkLockInit)
+            return;
+
+        // Signal the drainer to exit after a final flush, then wait briefly.
+        InterlockedExchange(&s_drainStop, 1);
+        if (s_drainEvent != nullptr)
+            SetEvent(s_drainEvent);
+        if (s_drainThread != nullptr)
         {
-            CrstHolder lock(&s_sinkLock);
-            if (s_sink != nullptr)
-            {
-                fflush(s_sink);
-                fclose(s_sink);
-                s_sink = nullptr;
-            }
+            WaitForSingleObject(s_drainThread, 200 /*ms*/);
+            CloseHandle(s_drainThread);
+            s_drainThread = nullptr;
+        }
+
+        CrstHolder lock(&s_sinkLock);
+        // Drain anything the background thread may have left in the ring.
+        DrainRingLocked();
+        if (s_drainEvent != nullptr)
+        {
+            CloseHandle(s_drainEvent);
+            s_drainEvent = nullptr;
+        }
+        if (s_ring != nullptr)
+        {
+            free(s_ring);
+            s_ring = nullptr;
+        }
+        if (s_sink != nullptr)
+        {
+            fflush(s_sink);
+            fclose(s_sink);
+            s_sink = nullptr;
         }
     }
 }

@@ -483,6 +483,7 @@ static const Entry s_QCall[] =
     DllImportEntry(EventPipeInternal_SignalSession)
     DllImportEntry(EventPipeInternal_WaitForSessionSignal)
 #endif // FEATURE_PERFTRACING
+    DllImportEntry(NativeRuntimeEventSource_LogGhostUserPunch)
 #if defined(TARGET_UNIX)
     DllImportEntry(FreeEnvironmentStringsW)
     DllImportEntry(GetEnvironmentStringsW)
