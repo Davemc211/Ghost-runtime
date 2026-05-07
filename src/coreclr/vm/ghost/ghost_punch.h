@@ -146,6 +146,11 @@ typedef char ghost_punch_card_must_be_64_bytes
 #define GHOST_OP_CLR_THREAD_ADJUST  0xC5u
 #define GHOST_OP_CLR_ASSEMBLY_LOAD  0xC6u
 
+/* CLR cluster overflow — 0xC7..0xCE are taken by sync primitives. */
+#define GHOST_OP_CLR_EXCEPTION      0xD3u
+#define GHOST_OP_CLR_THREAD_START   0xD4u
+#define GHOST_OP_CLR_THREAD_END     0xD5u
+
 /* High nibble of op_code is the category (see GhostPunchCard.Category). */
 #define GHOST_CATEGORY(op) ((uint8_t)((op) >> 4))
 

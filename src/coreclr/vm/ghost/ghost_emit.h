@@ -94,6 +94,27 @@ namespace GhostTier0
     //   Magnitude  = adjustment reason (low byte)
     void EmitThreadAdjust(uint32_t newWorkerCount, uint32_t reason);
 
+    // Managed exception thrown (eventtrace.cpp ETW::ExceptionLog::ExceptionThrown
+    // call site). Per the Tier 0 wire contract:
+    //   SourceHash = FNV-1a("CoreCLR")
+    //   TargetHash = FNV-1a(<exception type name, ASCII>)
+    //   Magnitude  = 0 (managed throw); 1 reserved for fatal/unhandled
+    //   Detail     = HRESULT low 16 bits
+    // High-frequency call site \u2014 must be cheap and never throw. `typeName` is
+    // ASCII (callers narrow from UTF-16 in place); nullptr collapses to the
+    // stable hash of "Unknown".
+    void EmitException(const char* typeName, uint32_t hresult);
+
+    // Managed thread lifecycle (threads.cpp Thread::HasStarted /
+    // Thread::OnThreadTerminate call sites). Per the Tier 0 wire contract:
+    //   SourceHash = FNV-1a("CoreCLR")
+    //   TargetHash = FNV-1a("Thread::Start" | "Thread::End")
+    //   Magnitude  = ThreadStart: 0
+    //                ThreadEnd:   0 = normal exit, 1 = abort
+    //   Detail     = managed thread id low 16 bits
+    void EmitThreadStart(uint32_t managedThreadId);
+    void EmitThreadEnd(uint32_t managedThreadId, uint32_t aborted);
+
     // ---- Tier 1: managed user-punch entrypoint ------------------------------
     //
     // Backs the System.Private.CoreLib `Ghost.Runtime.Punch(opCode, magnitude,

@@ -9,7 +9,6 @@
 
 #include "frames.h"
 #include "threads.h"
-#include "stackwalk.h"
 #include "excep.h"
 #include "comsynchronizable.h"
 #include "log.h"
@@ -28,6 +27,8 @@
 #include "configuration.h"
 
 #include "wrappers.h"
+
+#include "ghost/ghost_emit.h"
 
 #include "appdomain.inl"
 #include "exceptmacros.h"
@@ -1615,6 +1616,11 @@ BOOL Thread::HasStarted()
 #ifdef FEATURE_EVENT_TRACE
         ETW::ThreadLog::FireThreadCreated(this);
 #endif // FEATURE_EVENT_TRACE
+
+        // Ghost Tier 0 ClrThreadStart: emit on the same successful-start path
+        // as the ETW ThreadCreated event. NOTHROW context (we are still inside
+        // the EX_TRY); the emitter never throws.
+        GhostTier0::EmitThreadStart((uint32_t)GetThreadId());
     }
     EX_CATCH
     {
@@ -2585,6 +2591,12 @@ void Thread::OnThreadTerminate(BOOL holdingLock)
     Thread *pCurrentThread = GetThreadNULLOk();
     DWORD CurrentThreadID = pCurrentThread?pCurrentThread->GetThreadId():0;
     DWORD ThisThreadID = GetThreadId();
+
+    // Ghost Tier 0 ClrThreadEnd: emit once per terminating thread, paired
+    // with the ClrThreadStart fired in HasStarted(). Magnitude reflects abort
+    // state. NOTHROW context per the enclosing CONTRACTL.
+    GhostTier0::EmitThreadEnd((uint32_t)ThisThreadID,
+                              (m_State & TS_AbortRequested) != 0 ? 1u : 0u);
 
 #ifdef FEATURE_COMINTEROP_APARTMENT_SUPPORT
     // If the currently running thread is the thread that died and it is an STA thread, then we

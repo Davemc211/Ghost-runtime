@@ -45,6 +45,8 @@
 #include "eventtracepriv.h"
 #include "debugdebugger.h"
 
+#include "ghost/ghost_emit.h"
+
 #ifndef HOST_UNIX
 DOTNET_TRACE_CONTEXT MICROSOFT_WINDOWS_DOTNETRUNTIME_PROVIDER_DOTNET_Context = { &MICROSOFT_WINDOWS_DOTNETRUNTIME_PROVIDER_Context, MICROSOFT_WINDOWS_DOTNETRUNTIME_PROVIDER_EVENTPIPE_Context };
 DOTNET_TRACE_CONTEXT MICROSOFT_WINDOWS_DOTNETRUNTIME_PRIVATE_PROVIDER_DOTNET_Context = { &MICROSOFT_WINDOWS_DOTNETRUNTIME_PRIVATE_PROVIDER_Context, MICROSOFT_WINDOWS_DOTNETRUNTIME_PRIVATE_PROVIDER_EVENTPIPE_Context };
@@ -2792,8 +2794,7 @@ VOID ETW::ExceptionLog::ExceptionThrown(CrawlFrame  *pCf, BOOL bIsReThrownExcept
     if(!ETW_EVENT_ENABLED(MICROSOFT_WINDOWS_DOTNETRUNTIME_PROVIDER_DOTNET_Context, ExceptionThrown_V1))
     {
         return;
-    }
-    EX_TRY
+    }    EX_TRY
     {
         SString exceptionType(W(""));
         LPWSTR exceptionMessage = NULL;
@@ -2872,6 +2873,26 @@ VOID ETW::ExceptionLog::ExceptionThrown(CrawlFrame  *pCf, BOOL bIsReThrownExcept
                                   exceptionHRESULT,
                                   exceptionFlags,
                                   GetClrInstanceId());
+
+        // Ghost Tier 0 mirror: narrow the type name to ASCII (lossy is fine —
+        // managed type names are ASCII outside of edge-case generics) and emit
+        // a single ClrException card. Stack-buffer sized to cover typical type
+        // names; longer names are truncated. NOTHROW per the enclosing CONTRACTL.
+        {
+            char ghostType[192];
+            size_t i = 0;
+            if (exceptionTypeName != NULL)
+            {
+                for (; i < ARRAY_SIZE(ghostType) - 1 && exceptionTypeName[i] != L'\0'; ++i)
+                {
+                    WCHAR wc = exceptionTypeName[i];
+                    ghostType[i] = (wc < 0x80) ? (char)wc : '?';
+                }
+            }
+            ghostType[i] = '\0';
+            GhostTier0::EmitException(i > 0 ? ghostType : NULL,
+                                      (uint32_t)exceptionHRESULT);
+        }
         GCPROTECT_END();
     } EX_CATCH { } EX_END_CATCH
 }

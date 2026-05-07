@@ -496,6 +496,60 @@ namespace GhostTier0
         WriteCard(card);
     }
 
+    void EmitException(const char* typeName, uint32_t hresult)
+    {
+        EnsureSinkLock();
+        CrstHolder lock(&s_sinkLock);
+
+        ghost_punch_card card;
+        // Tier 0 wire contract for ClrException:
+        //   SourceHash    = FNV-1a("CoreCLR")        (set by FillCommon)
+        //   TargetHash    = FNV-1a(<exception type name>)
+        //   Magnitude     = 0 (managed throw)
+        //   Detail        = HRESULT low 16 bits
+        //   CorrelationId = 0 (each throw is independent at Tier 0)
+        FillCommon(card, GHOST_OP_CLR_EXCEPTION, typeName != nullptr ? typeName : "Unknown");
+        card.correlation_id = 0;
+        card.magnitude      = 0;
+        card.detail         = (uint16_t)(hresult & 0xFFFFu);
+        WriteCard(card);
+    }
+
+    void EmitThreadStart(uint32_t managedThreadId)
+    {
+        EnsureSinkLock();
+        CrstHolder lock(&s_sinkLock);
+
+        ghost_punch_card card;
+        // Tier 0 wire contract for ClrThreadStart:
+        //   SourceHash    = FNV-1a("CoreCLR")
+        //   TargetHash    = FNV-1a("Thread::Start")
+        //   Detail        = managed thread id low 16 bits
+        //   CorrelationId = 0 (correlation flow lights up in a later tier)
+        FillCommon(card, GHOST_OP_CLR_THREAD_START, "Thread::Start");
+        card.correlation_id = 0;
+        card.detail         = (uint16_t)(managedThreadId & 0xFFFFu);
+        WriteCard(card);
+    }
+
+    void EmitThreadEnd(uint32_t managedThreadId, uint32_t aborted)
+    {
+        EnsureSinkLock();
+        CrstHolder lock(&s_sinkLock);
+
+        ghost_punch_card card;
+        // Tier 0 wire contract for ClrThreadEnd:
+        //   SourceHash    = FNV-1a("CoreCLR")
+        //   TargetHash    = FNV-1a("Thread::End")
+        //   Magnitude     = 0 normal exit, 1 abort
+        //   Detail        = managed thread id low 16 bits
+        FillCommon(card, GHOST_OP_CLR_THREAD_END, "Thread::End");
+        card.correlation_id = 0;
+        card.magnitude      = aborted != 0 ? (uint8_t)1u : (uint8_t)0u;
+        card.detail         = (uint16_t)(managedThreadId & 0xFFFFu);
+        WriteCard(card);
+    }
+
     void EmitUserPunch(uint8_t opCode, uint8_t magnitude, uint16_t detail)
     {
         // Tier 1 wire contract for the managed Ghost.Runtime.Punch API:
