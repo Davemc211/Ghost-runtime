@@ -43,6 +43,8 @@
 #include "gdbjit.h"
 #endif // FEATURE_GDBJIT
 
+#include "ghost/ghost_emit.h"
+
 #ifndef DACCESS_COMPILE
 
 EXTERN_C void STDCALL ThePreStubPatch();
@@ -785,6 +787,9 @@ PCODE MethodDesc::JitCompileCodeLockedEventWrapper(PrepareCodeConfig* pConfig, J
     COR_ILMETHOD_DECODER* pilHeader = GetAndVerifyILHeader(this, pConfig, &ilDecoderTemp);
     bool isInterpreterCode = false;
 
+    // Ghost Tier 0: capture wall-clock baseline to bracket the JIT compile.
+    ULONGLONG ghostJitStartTicks = GetTickCount64();
+
     if (!ETW_TRACING_CATEGORY_ENABLED(MICROSOFT_WINDOWS_DOTNETRUNTIME_PROVIDER_DOTNET_Context,
         TRACE_LEVEL_VERBOSE,
         CLR_JIT_KEYWORD))
@@ -880,6 +885,32 @@ PCODE MethodDesc::JitCompileCodeLockedEventWrapper(PrepareCodeConfig* pConfig, J
     // Save the JIT'd method information so that perf can resolve JIT'd call frames.
     PerfMap::LogJITCompiledMethod(this, pCode, sizeOfCode, pConfig);
 #endif
+
+    // Ghost Tier 0: emit ClrJitCompile after a successful compile. Best-effort
+    // and never throws — Tier 0 is a development-time validation loop.
+    if (pCode != (PCODE)NULL)
+    {
+        ULONGLONG elapsed = GetTickCount64() - ghostJitStartTicks;
+        Module*  pModule  = GetModule();
+        LPCUTF8  modName  = (pModule != nullptr) ? pModule->GetSimpleName() : nullptr;
+        LPCUTF8  metName  = nullptr;
+        EX_TRY
+        {
+            metName = GetName();
+        }
+        EX_CATCH
+        {
+            metName = nullptr;
+        }
+        EX_END_CATCH
+        if (modName != nullptr && metName != nullptr)
+        {
+            GhostTier0::EmitJitCompile(modName,
+                                       metName,
+                                       (uint32_t)sizeOfCode,
+                                       (uint32_t)elapsed);
+        }
+    }
 
     // The notification will only occur if someone has registered for this method.
     DACNotifyCompilationFinished(this, pCode);

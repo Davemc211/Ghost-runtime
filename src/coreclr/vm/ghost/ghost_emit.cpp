@@ -42,6 +42,31 @@ namespace
     uint64_t s_bootBaselineTicks = 0;
     uint16_t s_corrSequence = 0;
 
+    // Tier 0 emitters can fire from multiple threads (e.g. AssemblyLoad on
+    // worker threads after EE startup). Serialize sink writes and the
+    // s_corrSequence counter with a CRST. Created lazily under InitOnce.
+    CrstStatic s_sinkLock;
+    bool       s_sinkLockInit = false;
+
+    void EnsureSinkLock()
+    {
+        if (s_sinkLockInit)
+            return;
+        // CrstStatic::Init is idempotent w.r.t. our own usage but not racy-safe;
+        // gate via InterlockedCompareExchange to make first-use single-shot.
+        static LONG s_initOnce = 0;
+        if (InterlockedCompareExchange(&s_initOnce, 1, 0) == 0)
+        {
+            s_sinkLock.Init(CrstLeafLock, CRST_UNSAFE_ANYMODE);
+            s_sinkLockInit = true;
+        }
+        else
+        {
+            // Spin briefly for the winner to finish init. Tier 0 only.
+            while (!s_sinkLockInit) { YieldProcessor(); }
+        }
+    }
+
     // Boot id = monotonic constant for the run; the three boot punches share it.
     // Low 16 bits = a marker; high bits = process id so cross-process collisions
     // can't fool the validator.
@@ -78,6 +103,7 @@ namespace
 
     void WriteCard(const ghost_punch_card& card)
     {
+        // Caller holds s_sinkLock.
         OpenSinkOnce();
         if (s_sink == nullptr)
             return;
@@ -90,6 +116,7 @@ namespace
 
     void FillCommon(ghost_punch_card& card, uint8_t opCode, const char* targetName)
     {
+        // Caller holds s_sinkLock so the s_corrSequence increment is safe.
         memset(&card, 0, sizeof(card));
         card.tick           = TickSinceBoot();
         card.op_code        = opCode;
@@ -107,32 +134,89 @@ namespace GhostTier0
 {
     void EmitBootStart()
     {
+        EnsureSinkLock();
+        CrstHolder lock(&s_sinkLock);
+
         ghost_punch_card card;
         FillCommon(card, GHOST_OP_BOOT_START, "EEStartup");
         // BootStart resets the correlation sequence — it's the first event in
-        // the boot scenario. corr_sequence is already 0 from FillCommon since
-        // s_corrSequence was zero at construction; assert the invariant for
-        // future readers.
+        // the boot scenario. FillCommon already advanced s_corrSequence to 1;
+        // overwrite this card's slot with 0 so BootStart is sequence 0 by
+        // protocol contract.
         card.corr_sequence = 0;
-        s_corrSequence = 1;
+        s_corrSequence     = 1;
         WriteCard(card);
     }
 
     void EmitBootReady(uint16_t durationMs)
     {
+        EnsureSinkLock();
+        CrstHolder lock(&s_sinkLock);
+
         ghost_punch_card card;
         FillCommon(card, GHOST_OP_BOOT_READY, "EEStartup");
         card.duration_ms = durationMs;
         WriteCard(card);
     }
 
+    void EmitAssemblyLoad(const char* simpleName)
+    {
+        if (simpleName == nullptr)
+            return;
+
+        EnsureSinkLock();
+        CrstHolder lock(&s_sinkLock);
+
+        ghost_punch_card card;
+        // Tier 0 wire contract for ClrAssemblyLoad:
+        //   SourceHash = FNV-1a("Default")           (load context name)
+        //   TargetHash = FNV-1a(<simple name>)       (no version/culture/PKT)
+        //   CorrelationId = 0                        (each load is independent)
+        FillCommon(card, GHOST_OP_CLR_ASSEMBLY_LOAD, simpleName);
+        card.source_hash    = GhostFnv1aUpper("Default");
+        card.correlation_id = 0;
+        WriteCard(card);
+    }
+
+    void EmitJitCompile(const char* moduleSimpleName,
+                        const char* methodName,
+                        uint32_t    nativeCodeSize,
+                        uint32_t    elapsedMs)
+    {
+        if (moduleSimpleName == nullptr || methodName == nullptr)
+            return;
+
+        EnsureSinkLock();
+        CrstHolder lock(&s_sinkLock);
+
+        ghost_punch_card card;
+        // Tier 0 wire contract for ClrJitCompile:
+        //   SourceHash    = FNV-1a(<module simple name>)
+        //   TargetHash    = FNV-1a(<method name>)
+        //   Detail        = native code size, saturating
+        //   DurationMs    = elapsed ms, saturating
+        //   CorrelationId = 0 (each compile is independent)
+        FillCommon(card, GHOST_OP_CLR_JIT_COMPILE, methodName);
+        card.source_hash    = GhostFnv1aUpper(moduleSimpleName);
+        card.correlation_id = 0;
+        card.detail         = nativeCodeSize > 0xFFFFu ? (uint16_t)0xFFFFu
+                                                      : (uint16_t)nativeCodeSize;
+        card.duration_ms    = elapsedMs > 0xFFFFu ? (uint16_t)0xFFFFu
+                                                  : (uint16_t)elapsedMs;
+        WriteCard(card);
+    }
+
     void Shutdown()
     {
-        if (s_sink != nullptr)
+        if (s_sinkLockInit)
         {
-            fflush(s_sink);
-            fclose(s_sink);
-            s_sink = nullptr;
+            CrstHolder lock(&s_sinkLock);
+            if (s_sink != nullptr)
+            {
+                fflush(s_sink);
+                fclose(s_sink);
+                s_sink = nullptr;
+            }
         }
     }
 }

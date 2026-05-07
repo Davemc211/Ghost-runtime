@@ -33,6 +33,26 @@ namespace GhostTier0
     void EmitBootStart();
     void EmitBootReady(uint16_t durationMs);
 
+    // Assembly load emit (Assembly::Init call site). `simpleName` is the
+    // assembly's simple name (no version/culture/PKT) — the Tier 0 wire
+    // contract hashes only the simple name into TargetHash. May be called
+    // concurrently from multiple threads; the implementation serializes
+    // writes and the per-record corr_sequence counter.
+    void EmitAssemblyLoad(const char* simpleName);
+
+    // JIT compile emit (prestub.cpp call site, after JitCompileCodeLocked
+    // returns successfully). Per the Tier 0 wire contract:
+    //   SourceHash    = FNV-1a(<module simple name>)
+    //   TargetHash    = FNV-1a(<method name>)
+    //   Detail        = native code size in bytes (saturating uint16)
+    //   DurationMs    = JIT elapsed time in ms (saturating uint16)
+    //   CorrelationId = 0 (each compile is independent)
+    // High-frequency call site — must be cheap and never throw.
+    void EmitJitCompile(const char* moduleSimpleName,
+                        const char* methodName,
+                        uint32_t    nativeCodeSize,
+                        uint32_t    elapsedMs);
+
     // Test/diagnostics: flush + close the sink. Safe to call multiple times.
     void Shutdown();
 }

@@ -37,6 +37,8 @@
 
 #include "peimagelayout.inl"
 
+#include "ghost/ghost_emit.h"
+
 // Define these macro's to do strict validation for jit lock and class init entry leaks.
 // This defines determine if the asserts that verify for these leaks are defined or not.
 // These asserts can sometimes go off even if no entries have been leaked so this defines
@@ -201,6 +203,15 @@ void Assembly::Init(AllocMemTracker *pamTracker)
 
         GCX_COOP();
         LoaderAllocator::AssociateMemoryWithLoaderAllocator(start, start + size, m_pLoaderAllocator);
+    }
+
+    // Tier 0 emit: ClrAssemblyLoad. Fires once per Assembly::Init success path.
+    // Wire contract per docs/GHOST_CLR_TIER0_WIRE.md: TargetHash = FNV-1a of
+    // the simple name (no version/culture/PKT). Best-effort and never throws.
+    {
+        LPCUTF8 simpleName = GetSimpleName();
+        if (simpleName != NULL)
+            GhostTier0::EmitAssemblyLoad(simpleName);
     }
 
     {
