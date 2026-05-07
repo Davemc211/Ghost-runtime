@@ -854,6 +854,11 @@ void EEStartupHelper()
         // Static initialization
         SystemDomain::Attach();
 
+        // Ghost Tier 0: BootPhase milestone — SystemDomain is up. This is
+        // the canonical phase marker between BootStart and BootReady.
+        GhostTier0::EmitBootPhase("SystemDomain::Init",
+            (uint32_t)(GetTickCount64() - ghostBootStartTicks));
+
         COMDelegate::Init();
 
         ExecutionManager::Init();

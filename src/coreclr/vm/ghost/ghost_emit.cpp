@@ -161,6 +161,26 @@ namespace GhostTier0
         WriteCard(card);
     }
 
+    void EmitBootPhase(const char* phaseName, uint32_t elapsedMs)
+    {
+        if (phaseName == nullptr)
+            return;
+
+        EnsureSinkLock();
+        CrstHolder lock(&s_sinkLock);
+
+        ghost_punch_card card;
+        // Tier 0 wire contract for BootPhase:
+        //   SourceHash    = FNV-1a("CoreCLR")        (set by FillCommon)
+        //   TargetHash    = FNV-1a(<phase name>)
+        //   CorrelationId = boot correlation id      (shared with BootStart/BootReady)
+        //   DurationMs    = ms since BootStart, saturating uint16
+        FillCommon(card, GHOST_OP_BOOT_PHASE, phaseName);
+        card.duration_ms = elapsedMs > 0xFFFFu ? (uint16_t)0xFFFFu
+                                               : (uint16_t)elapsedMs;
+        WriteCard(card);
+    }
+
     void EmitAssemblyLoad(const char* simpleName)
     {
         if (simpleName == nullptr)

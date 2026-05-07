@@ -31,6 +31,14 @@ namespace GhostTier0
 {
     // Boot lifecycle emits (ceemain.cpp call sites).
     void EmitBootStart();
+
+    // Boot phase milestone emit (ceemain.cpp call sites between BootStart
+    // and BootReady). `phaseName` identifies the phase (e.g.
+    // "SystemDomain::Init") and is hashed into TargetHash. `elapsedMs` is
+    // the time since BootStart so each phase carries a cumulative duration.
+    // Shares the boot CorrelationId and is assigned the next corr_sequence.
+    void EmitBootPhase(const char* phaseName, uint32_t elapsedMs);
+
     void EmitBootReady(uint16_t durationMs);
 
     // Assembly load emit (Assembly::Init call site). `simpleName` is the
