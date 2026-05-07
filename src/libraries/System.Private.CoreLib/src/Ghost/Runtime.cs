@@ -41,6 +41,7 @@ namespace Ghost
         }
 
         [LibraryImport(RuntimeHelpers.QCall, EntryPoint = "NativeRuntimeEventSource_LogGhostUserPunch")]
+        [SuppressGCTransition]
         private static partial void LogGhostUserPunch(byte opCode, byte magnitude, ushort detail);
     }
 }

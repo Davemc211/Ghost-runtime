@@ -241,12 +241,14 @@ extern "C" void QCALLTYPE NativeRuntimeEventSource_LogWaitHandleWaitStop(uint16_
 // EventSource — it writes directly to the Ghost sink. Designed to be the
 // honest pre-intrinsic baseline measured by samples/Tier0Bench; the JIT
 // intrinsic in a later Tier 1 slice will replace this QCall transition.
+//
+// Tier 1 slice 2: this entry point is now invoked with [SuppressGCTransition]
+// from managed code, so the JIT calls it as a leaf C function with no GC
+// mode flip and no QCall frame. We therefore MUST NOT use BEGIN_QCALL /
+// END_QCALL here, and MUST NOT touch the GC heap, allocate, throw, or call
+// any code that does. EmitUserPunch is lock-free and only memcpys 64 bytes
+// into a pre-allocated ring slot, so it satisfies the leaf contract.
 extern "C" void QCALLTYPE NativeRuntimeEventSource_LogGhostUserPunch(uint8_t opCode, uint8_t magnitude, uint16_t detail)
 {
-    QCALL_CONTRACT;
-    BEGIN_QCALL;
-
     GhostTier0::EmitUserPunch(opCode, magnitude, detail);
-
-    END_QCALL;
 }

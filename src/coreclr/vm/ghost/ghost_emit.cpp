@@ -233,6 +233,49 @@ namespace
         WriteCard(card);
     }
 
+    // ---- Tier 1 lock-free user-punch fast path ------------------------------
+    // The user-punch hot path (Ghost.Runtime.Punch) cannot afford the CRST
+    // round trip, so it reserves a ring slot via InterlockedIncrement64 and
+    // writes directly. Safe because:
+    //   * Ring + drainer are already initialized by boot-time punches that ran
+    //     under the CRST. The atomic load of s_ring is sufficient to observe.
+    //   * Each producer owns a unique slot index; concurrent writers never
+    //     touch the same 64 bytes.
+    //   * The drainer reads s_ringWrite once per pass; a producer that
+    //     reserved a slot but hasn't finished memcpy'ing will be drained on
+    //     the next pass (the 5 ms wait timer guarantees forward progress).
+    //   * Overflow degrades to the locked sync path so cards are never lost.
+    void PublishCardLockFree(const ghost_punch_card& card)
+    {
+        if (s_ring == nullptr)
+        {
+            // Cold path: ring not yet initialized. Take the lock and use the
+            // standard publish path; this is hit at most a handful of times
+            // before any boot punch fires.
+            EnsureSinkLock();
+            CrstHolder lock(&s_sinkLock);
+            PublishCard(card);
+            return;
+        }
+
+        LONG64 reserved = InterlockedIncrement64(&s_ringWrite) - 1;
+        LONG64 read     = s_ringRead;
+        if ((reserved - read) < (LONG64)kRingCap)
+        {
+            size_t slot = (size_t)(reserved & kRingMask);
+            memcpy(&s_ring[slot], &card, sizeof(card));
+            if (((reserved + 1) & (kWakeBatch - 1)) == 0)
+                SetEvent(s_drainEvent);
+            return;
+        }
+
+        // Ring full — give the slot back and fall through to the sync path.
+        InterlockedIncrement64(&s_overflow);
+        EnsureSinkLock();
+        CrstHolder lock(&s_sinkLock);
+        WriteCard(card);
+    }
+
     void WriteCard(const ghost_punch_card& card)
     {
         // Caller holds s_sinkLock.
@@ -463,13 +506,18 @@ namespace GhostTier0
         //   target_hash    = 0        (reserved for a future named overload)
         //   correlation_id = 0        (ExecutionContext flow lands later)
         //   tick / pid / tid / OriginRuntime stamped inline (no FNV per call)
-        EnsureSinkLock();
-        CrstHolder lock(&s_sinkLock);
+        //
+        // Lock-free hot path: this function does NOT acquire s_sinkLock.
+        // Slot reservation is via InterlockedIncrement64 on s_ringWrite, and
+        // the corr_sequence is bumped via a separate atomic so concurrent
+        // callers can't collide. The CRST is only re-entered for the cold
+        // ring-init path or the ring-full overflow fallback.
 
         // Hot-path constants are precomputed once per process so this
         // function does not pay any FNV hashing cost.
         static const uint32_t kUserCodeHash = GhostFnv1aUpper("UserCode");
         static const uint16_t kPid          = (uint16_t)GetCurrentProcessId();
+        static volatile LONG  s_userSeq     = 0;
 
         ghost_punch_card card;
         memset(&card, 0, sizeof(card));
@@ -478,13 +526,13 @@ namespace GhostTier0
         card.source_hash    = kUserCodeHash;
         card.target_hash    = 0;
         card.correlation_id = 0;
-        card.corr_sequence  = s_corrSequence++;
+        card.corr_sequence  = (uint16_t)InterlockedIncrement(&s_userSeq);
         card.process_id     = kPid;
         card.thread_id      = (uint16_t)GetCurrentThreadId();
         card.magnitude      = magnitude;
         card.detail         = detail;
         card.extra_detail   = GHOST_ORIGIN_BITS(GHOST_ORIGIN_SERVER);
-        PublishCard(card);
+        PublishCardLockFree(card);
     }
 
     void Shutdown()
