@@ -181,6 +181,8 @@ EXTERN_C FCDECL0(void, JIT_FailFast);
 
 FCDECL0(int, JIT_GetCurrentManagedThreadId);
 
+FCDECL3(void, JIT_GhostPunch, UINT8 opCode, UINT8 magnitude, UINT16 detail);
+
 EXTERN_C void ReversePInvokeBadTransition();
 
 #if !defined(FEATURE_USE_ASM_GC_WRITE_BARRIERS) && defined(FEATURE_COUNT_GC_WRITE_BARRIERS)

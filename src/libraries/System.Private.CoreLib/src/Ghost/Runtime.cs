@@ -34,9 +34,14 @@ namespace Ghost
         /// <param name="magnitude">Caller-supplied magnitude byte.</param>
         /// <param name="detail">Caller-supplied detail word.</param>
         [CLSCompliant(false)]
+        [Intrinsic]
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void Punch(byte opCode, byte magnitude, ushort detail)
         {
+            // Fallback path when the JIT does not lower this call to the
+            // CORINFO_HELP_GHOST_PUNCH helper (e.g., interpreter / R2R without
+            // an entry for this intrinsic). The JIT replaces the call body
+            // entirely when NI_Ghost_Runtime_Punch is recognized.
             LogGhostUserPunch(opCode, magnitude, detail);
         }
 

@@ -266,6 +266,12 @@ enum NamedIntrinsic : unsigned short
     NI_PRIMITIVE_END,
 
     //
+    // Ghost Intrinsics
+    //
+
+    NI_Ghost_Runtime_Punch,
+
+    //
     // Enumeration Intrinsics
     //
     NI_System_SZArrayHelper_GetEnumerator,

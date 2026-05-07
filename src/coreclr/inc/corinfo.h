@@ -591,6 +591,8 @@ enum CorInfoHelpFunc
     CORINFO_HELP_ALLOC_CONTINUATION_METHOD,
     CORINFO_HELP_ALLOC_CONTINUATION_CLASS,
 
+    CORINFO_HELP_GHOST_PUNCH,               // Ghost.Runtime.Punch(byte,byte,ushort) -- direct emit, no GC transition
+
     CORINFO_HELP_COUNT,
 };
 

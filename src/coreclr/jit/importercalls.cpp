@@ -4365,6 +4365,16 @@ GenTree* Compiler::impIntrinsic(CORINFO_CLASS_HANDLE    clsHnd,
                 break;
             }
 
+            case NI_Ghost_Runtime_Punch:
+            {
+                assert(sig->numArgs == 3);
+                GenTree* op3 = impPopStack().val; // detail   (ushort)
+                GenTree* op2 = impPopStack().val; // magnitude (byte)
+                GenTree* op1 = impPopStack().val; // opCode   (byte)
+                retNode      = gtNewHelperCallNode(CORINFO_HELP_GHOST_PUNCH, TYP_VOID, op1, op2, op3);
+                break;
+            }
+
 #ifdef FEATURE_HW_INTRINSICS
             case NI_System_Half_op_Explicit:
             {
@@ -10450,6 +10460,12 @@ NamedIntrinsic Compiler::lookupNamedIntrinsic(CORINFO_METHOD_HANDLE method)
     JITDUMP(": ");
 
     NamedIntrinsic result = NI_Illegal;
+
+    if ((strcmp(namespaceName, "Ghost") == 0) && (strcmp(className, "Runtime") == 0) &&
+        (strcmp(methodName, "Punch") == 0))
+    {
+        return NI_Ghost_Runtime_Punch;
+    }
 
     if (strncmp(namespaceName, "System", 6) == 0)
     {

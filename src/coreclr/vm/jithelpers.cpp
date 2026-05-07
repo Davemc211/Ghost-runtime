@@ -24,6 +24,7 @@
 #include "eeprofinterfaces.h"
 #include "dynamicinterfacecastable.h"
 #include "comsynchronizable.h"
+#include "ghost/ghost_emit.h"
 
 #ifndef TARGET_UNIX
 // Included for referencing __report_gsfailure
@@ -1195,6 +1196,16 @@ FCIMPL0(INT32, JIT_GetCurrentManagedThreadId)
 
     Thread * pThread = GetThread();
     return pThread->GetThreadId();
+}
+FCIMPLEND
+
+// Ghost.Runtime.Punch -- direct emit, no GC transition. Lowered from the
+// NI_Ghost_Runtime_Punch named intrinsic to CORINFO_HELP_GHOST_PUNCH.
+FCIMPL3(void, JIT_GhostPunch, UINT8 opCode, UINT8 magnitude, UINT16 detail)
+{
+    FCALL_CONTRACT;
+
+    GhostTier0::EmitUserPunch(opCode, magnitude, detail);
 }
 FCIMPLEND
 
