@@ -117,6 +117,7 @@
 
 #include "common.h"
 
+#include "ghost/ghost_emit.h"
 #include "vars.hpp"
 #include "log.h"
 #include "ceemain.h"
@@ -614,6 +615,12 @@ void EEStartupHelper()
 
     HRESULT hr = S_OK;
     static ConfigDWORD breakOnEELoad;
+
+    // Ghost Tier 0: emit BootStart at the very top of EE startup. The duration
+    // captured below for BootReady is measured against this point.
+    ULONGLONG ghostBootStartTicks = GetTickCount64();
+    GhostTier0::EmitBootStart();
+
     EX_TRY
     {
         g_fEEInit = true;
@@ -1025,6 +1032,14 @@ void EEStartupHelper()
         g_EEStartupStatus = S_OK;
         hr = S_OK;
         STRESS_LOG0(LF_STARTUP, LL_ALWAYS, "===================EEStartup Completed===================");
+
+        // Ghost Tier 0: EE is fully started. Emit BootReady with the elapsed
+        // time since BootStart, clamped to the wire's uint16_t millisecond field.
+        {
+            ULONGLONG elapsed = GetTickCount64() - ghostBootStartTicks;
+            uint16_t durationMs = (elapsed > 0xFFFFu) ? (uint16_t)0xFFFFu : (uint16_t)elapsed;
+            GhostTier0::EmitBootReady(durationMs);
+        }
 
 
 #ifdef _DEBUG

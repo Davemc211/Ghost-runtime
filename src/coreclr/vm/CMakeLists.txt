@@ -291,6 +291,7 @@ set(VM_SOURCES_WKS
     assemblyspec.cpp
     baseassemblyspec.cpp
     bundle.cpp
+    ghost/ghost_emit.cpp
     ${RUNTIME_DIR}/CachedInterfaceDispatch.cpp
     CachedInterfaceDispatch_Coreclr.cpp
     ${RUNTIME_DIR}/MiscNativeHelpers.cpp
