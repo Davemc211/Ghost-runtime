@@ -13389,11 +13389,13 @@ static TADDR UnsafeJitFunctionWorker(
                                   &sizeOfCode,
                                   nativeCodeVersion);
 
-#if FEATURE_PERFMAP
-        _ASSERTE(pSizeOfCode != NULL);
-        // Save the code size so that it can be reported to the perfmap.
-        *pSizeOfCode = sizeOfCode;
-#endif // FEATURE_PERFMAP
+// Always surface the JIT-reported native code size to the caller. PerfMap
+// is one consumer; Ghost Tier 0 telemetry (ClrJitCompile.Detail) is another.
+// Gating this on FEATURE_PERFMAP causes Detail to be 0 on builds without it.
+if (pSizeOfCode != NULL)
+{
+    *pSizeOfCode = sizeOfCode;
+}
 
 #ifdef PERF_TRACK_METHOD_JITTIMES
         //store the time in the string buffer.  Module name and token are unique enough.  Also, do not

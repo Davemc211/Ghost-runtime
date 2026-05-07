@@ -92,7 +92,9 @@ namespace
             return;
         s_sinkAttempted = true;
 
-        const char* envPath = getenv("GHOST_TIER0_PUNCH_FILE");
+        const char* envPath = getenv("GHOST_TIER0_RUNTIME_PUNCH");
+        if (envPath == nullptr)
+            envPath = getenv("GHOST_TIER0_PUNCH_FILE");
         const char* path = envPath != nullptr ? envPath : ".ghost/clr-tier0.punch";
 
         // Best-effort directory creation when using the default path. We don't
